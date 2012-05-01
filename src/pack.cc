@@ -207,7 +207,7 @@ void Write(v8::Handle<v8::Value> v) {
       WriteVarint(length - 31);
     }
 
-    RUCKSACK_ALLOCATE(length);
+    RUCKSACK_ALLOCATE(length)
     memcpy(output.data + output.ptr, *utf8, length);
     output.ptr += length;
   }
@@ -221,8 +221,28 @@ void Write(v8::Handle<v8::Value> v) {
   }
 
   else {
-    // @todo: everything else -- default to undefined for now
-    WriteByte(0xa1);
+    HandleScope scope;
+
+    if (v->IsArray()) {
+      Local<Array> array = Array::Cast(*v);
+      uint32_t i, length = array->Length();
+
+      if (length < 15) {
+        WriteByte(0xc0 + length);
+      } else {
+        WriteByte(0xcf);
+        WriteVarint(length - 15);
+      }
+
+      for (i = 0; i < length; i++) {
+        Write(array->Get(i));
+      }
+    }
+
+    else {
+      // @todo: everything else -- default to undefined for now
+      WriteByte(0xa1);
+    }
   }
 }
 
