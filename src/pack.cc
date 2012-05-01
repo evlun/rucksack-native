@@ -14,47 +14,51 @@ using namespace v8;
 namespace rucksack {
 
 #define RUCKSACK_ALLOCATE(bytes)                                               \
-  if (ptr_ > limit_ - bytes) {                                             \
+  if (ptr_ > limit_ - bytes) {                                                 \
     Allocate();                                                                \
   }
 
 OutputBuffer::OutputBuffer() {
   Buffer* buf = Buffer::New(kBufferSize);
-  buffer_ = Persistent<Object>::New(buf->handle_);
+  handle_ = Persistent<Object>::New(buf->handle_);
   data_ = Buffer::Data(buf);
 
-  start_ = 4;
+  last_flushed_ = 4;
   ptr_ = 4;
   limit_ = kBufferSize;
 }
 
 OutputBuffer::~OutputBuffer() {
-  buffer_.Dispose();
+  handle_.Dispose();
 }
 
 // @todo: this will fail horribly when attempting to serialize values that won't
 //        fit in kBufferSize bytes
 void OutputBuffer::Allocate() {
-  bool copy = ptr_ != start_;
-  char* previous = data_ + start_;
-  size_t length = static_cast<size_t>(ptr_ - start_);
+  char* previous = data_ + last_flushed_;
+  size_t length = static_cast<size_t>(ptr_ - last_flushed_);
+
+  // determine whether or not we need to move data from the current buffer to
+  // the new, by comparing the current `ptr_` value to when `Flush()` was last
+  // called
+  bool move = ptr_ != last_flushed_;
 
   // free the previous SlowBuffer for garbage collection
-  buffer_.Dispose();
+  handle_.Dispose();
 
-  // create a new Buffer instance
+  // create a new SlowBuffer instance
   Buffer* buf = Buffer::New(kBufferSize);
 
-  buffer_ = Persistent<Object>::New(buf->handle_);
+  handle_ = Persistent<Object>::New(buf->handle_);
   data_ = Buffer::Data(buf);
-
-  start_ = 4;
-  ptr_ = 4;
+  last_flushed_ = 4;
   limit_ = kBufferSize;
 
-  if (copy) {
-    memcpy(previous, data_ + start_, length);
-    ptr_ += length;
+  if (move) {
+    memcpy(data_ + last_flushed_, previous, length);
+    ptr_ = 4 + length;
+  } else {
+    ptr_ = 4;
   }
 }
 
@@ -64,8 +68,8 @@ void OutputBuffer::WriteByte(char byte) {
 }
 
 void OutputBuffer::WriteVarint(uint64_t v) {
-  // here we optimize for lower values of `v` because they're going to be much
-  // more common than larger ones
+  // we optimize for lower values of `v` because they're going to be much more
+  // common than larger ones
 
   if (v < 128) {
     RUCKSACK_ALLOCATE(1)
@@ -123,7 +127,7 @@ void OutputBuffer::WriteVarint(uint64_t v) {
 }
 
 void OutputBuffer::WriteDouble(double v) {
-  RUCKSACK_ALLOCATE(8);
+  RUCKSACK_ALLOCATE(8)
 
   char* dest = data_ + ptr_;
   char* src = reinterpret_cast<char*>(&v);
@@ -140,28 +144,28 @@ void OutputBuffer::WriteDouble(double v) {
 }
 
 Handle<Object> OutputBuffer::Flush(Handle<Object> target) {
-  uint16_t offset = static_cast<uint16_t>(start_);
-  uint16_t length = static_cast<uint16_t>(ptr_ - start_);
+  uint16_t offset = static_cast<uint16_t>(last_flushed_);
+  uint16_t length = static_cast<uint16_t>(ptr_ - last_flushed_);
 
-  data_[0] = static_cast<uint8_t>((offset     ) & 0xff);
-  data_[1] = static_cast<uint8_t>((offset >> 8) & 0xff);
-  data_[2] = static_cast<uint8_t>((length     ) & 0xff);
-  data_[3] = static_cast<uint8_t>((length >> 8) & 0xff);
+  data_[0] = static_cast<uint8_t>(offset     ) & 0xff;
+  data_[1] = static_cast<uint8_t>(offset >> 8) & 0xff;
+  data_[2] = static_cast<uint8_t>(length     ) & 0xff;
+  data_[3] = static_cast<uint8_t>(length >> 8) & 0xff;
 
   target->SetIndexedPropertiesToExternalArrayData(
-    data_ + start_, kExternalUnsignedByteArray, length);
+    data_ + last_flushed_, kExternalUnsignedByteArray, length);
 
-  // @todo: do proper stuff here
-  ptr_ = 4;
+  // update how much of the buffer has been flushed already
+  last_flushed_ = ptr_;
 
   // return the SlowBuffer object
-  return buffer_;
+  return handle_;
 }
 
 void pack(Handle<Value> v, OutputBuffer* out) {
   if (v->IsNumber()) {
     double d = v->NumberValue();
-    double t; // modf(d, &t)
+    double t; // dummy variable for `modf(d, &t)`
 
     // infinities and NaNs
     if (d == kPositiveInfinity) {

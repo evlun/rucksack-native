@@ -16,9 +16,9 @@ static const double kNegativeInfinity = -1.0 / 0.0;
 
 class OutputBuffer {
  private:
-  v8::Persistent<v8::Object> buffer_;
+  v8::Persistent<v8::Object> handle_;
   char* data_;
-  uintptr_t start_;
+  uintptr_t last_flushed_;
   uintptr_t ptr_;
   uintptr_t limit_;
 
