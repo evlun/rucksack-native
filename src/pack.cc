@@ -14,6 +14,12 @@ using namespace v8;
 namespace rucksack {
 
 
+#define RUCKSACK_ALLOCATE(bytes)                                               \
+  if (output.ptr > output.limit - bytes) {                                     \
+    Allocate();                                                                \
+  }
+
+
 static struct {
   Persistent<Object> handle;
   uint8_t* data;
@@ -21,6 +27,7 @@ static struct {
   uintptr_t ptr;
   uintptr_t limit;
 } output;
+
 
 void InitOutput() {
   Buffer* buffer = Buffer::New(kBufferSize);
@@ -31,11 +38,6 @@ void InitOutput() {
   output.ptr = 4;
   output.limit = kBufferSize;
 }
-
-#define RUCKSACK_ALLOCATE(bytes)                                               \
-  if (output.ptr > output.limit - bytes) {                                     \
-    Allocate();                                                                \
-  }
 
 
 // @todo: this will crash and burn when attempting to serialize values that
@@ -67,10 +69,12 @@ void Allocate() {
   }
 }
 
+
 void WriteByte(uint8_t byte) {
   RUCKSACK_ALLOCATE(1)
   output.data[output.ptr++] = byte;
 }
+
 
 void WriteVarint(uint64_t v) {
   // we optimize for lower values of `v` because they're going to be much more
@@ -131,6 +135,7 @@ void WriteVarint(uint64_t v) {
   }
 }
 
+
 void WriteDouble(double v) {
   RUCKSACK_ALLOCATE(8)
 
@@ -147,6 +152,7 @@ void WriteDouble(double v) {
 
   output.ptr += 8;
 }
+
 
 void Write(v8::Handle<v8::Value> v) {
   if (v->IsNumber()) {
@@ -190,11 +196,28 @@ void Write(v8::Handle<v8::Value> v) {
     }
   }
 
+  else if (v->IsString()) {
+    String::Utf8Value utf8(v);
+    int length = utf8.length();
+
+    if (length < 31) {
+      WriteByte(0xe0 + length);
+    } else {
+      WriteByte(0xff);
+      WriteVarint(length - 31);
+    }
+
+    RUCKSACK_ALLOCATE(length);
+    memcpy(output.data + output.ptr, *utf8, length);
+    output.ptr += length;
+  }
+
   else {
     // @todo: everything else -- default to undefined for now
     WriteByte(0xa1);
   }
 }
+
 
 v8::Handle<v8::Object> Flush(v8::Handle<v8::Object> target) {
   uint16_t offset = static_cast<uint16_t>(output.last_flushed);
