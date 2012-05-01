@@ -212,6 +212,14 @@ void Write(v8::Handle<v8::Value> v) {
     output.ptr += length;
   }
 
+  else if (v->IsBoolean()) {
+    WriteByte(v->BooleanValue() ? 0xa3 : 0xa4);
+  }
+
+  else if (v->IsNull()) {
+    WriteByte(0xa2);
+  }
+
   else {
     // @todo: everything else -- default to undefined for now
     WriteByte(0xa1);
@@ -231,7 +239,6 @@ v8::Handle<v8::Object> Flush(v8::Handle<v8::Object> target) {
   target->SetIndexedPropertiesToExternalArrayData(
     output.data + output.last_flushed, kExternalUnsignedByteArray, length);
 
-  // update how much of the buffer has been flushed already
   output.last_flushed = output.ptr;
 
   // return the SlowBuffer object
