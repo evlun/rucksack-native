@@ -13,124 +13,129 @@ using namespace v8;
 
 namespace rucksack {
 
+
+static struct {
+  Persistent<Object> handle;
+  uint8_t* data;
+  uintptr_t last_flushed;
+  uintptr_t ptr;
+  uintptr_t limit;
+} output;
+
+void InitOutput() {
+  Buffer* buffer = Buffer::New(kBufferSize);
+
+  output.handle = Persistent<Object>::New(buffer->handle_);
+  output.data = reinterpret_cast<uint8_t*>(Buffer::Data(buffer));
+  output.last_flushed = 4;
+  output.ptr = 4;
+  output.limit = kBufferSize;
+}
+
 #define RUCKSACK_ALLOCATE(bytes)                                               \
-  if (ptr_ > limit_ - bytes) {                                                 \
+  if (output.ptr > output.limit - bytes) {                                     \
     Allocate();                                                                \
   }
 
-OutputBuffer::OutputBuffer() {
-  Buffer* buf = Buffer::New(kBufferSize);
-  handle_ = Persistent<Object>::New(buf->handle_);
-  data_ = Buffer::Data(buf);
 
-  last_flushed_ = 4;
-  ptr_ = 4;
-  limit_ = kBufferSize;
-}
-
-OutputBuffer::~OutputBuffer() {
-  handle_.Dispose();
-}
-
-// @todo: this will fail horribly when attempting to serialize values that won't
-//        fit in kBufferSize bytes
-void OutputBuffer::Allocate() {
-  char* previous = data_ + last_flushed_;
-  size_t length = static_cast<size_t>(ptr_ - last_flushed_);
+// @todo: this will crash and burn when attempting to serialize values that
+//        won't fit in kBufferSize bytes
+void Allocate() {
+  uint8_t* previous = output.data + output.last_flushed;
+  size_t length = static_cast<size_t>(output.ptr - output.last_flushed);
 
   // determine whether or not we need to move data from the current buffer to
-  // the new, by comparing the current `ptr_` value to when `Flush()` was last
-  // called
-  bool move = ptr_ != last_flushed_;
+  // the new, by comparing the current `output.ptr` value to when `Flush()` was
+  // last called
+  bool move = output.ptr != output.last_flushed;
 
-  // free the previous SlowBuffer for garbage collection
-  handle_.Dispose();
+  Buffer* buffer = Buffer::New(kBufferSize);
 
-  // create a new SlowBuffer instance
-  Buffer* buf = Buffer::New(kBufferSize);
+  // free the old SlowBuffer for garbage collection
+  output.handle.Dispose();
+  output.handle = Persistent<Object>::New(buffer->handle_);
 
-  handle_ = Persistent<Object>::New(buf->handle_);
-  data_ = Buffer::Data(buf);
-  last_flushed_ = 4;
-  limit_ = kBufferSize;
+  output.data = reinterpret_cast<uint8_t*>(Buffer::Data(buffer));
+  output.last_flushed = 4;
+  output.limit = kBufferSize;
 
   if (move) {
-    memcpy(data_ + last_flushed_, previous, length);
-    ptr_ = 4 + length;
+    memcpy(output.data + output.last_flushed, previous, length);
+    output.ptr = 4 + length;
   } else {
-    ptr_ = 4;
+    output.ptr = 4;
   }
 }
 
-void OutputBuffer::WriteByte(char byte) {
+void WriteByte(uint8_t byte) {
   RUCKSACK_ALLOCATE(1)
-  data_[ptr_++] = byte;
+  output.data[output.ptr++] = byte;
 }
 
-void OutputBuffer::WriteVarint(uint64_t v) {
+void WriteVarint(uint64_t v) {
   // we optimize for lower values of `v` because they're going to be much more
   // common than larger ones
 
   if (v < 128) {
     RUCKSACK_ALLOCATE(1)
-    data_[ptr_++] = static_cast<uint8_t>(v);
+    output.data[output.ptr++] = static_cast<uint8_t>(v);
   } else if (v < 16384) {
     RUCKSACK_ALLOCATE(2)
-    data_[ptr_++] = static_cast<uint8_t>(v      ) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >>  7) & 0x7f;
+    output.data[output.ptr++] = static_cast<uint8_t>(v      ) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >>  7) & 0x7f;
   } else if (v < 2097152) {
     RUCKSACK_ALLOCATE(3)
-    data_[ptr_++] = static_cast<uint8_t>(v      ) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >>  7) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 14) & 0x7f;
+    output.data[output.ptr++] = static_cast<uint8_t>(v      ) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >>  7) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 14) & 0x7f;
   } else if (v < 268435456) {
     RUCKSACK_ALLOCATE(4)
-    data_[ptr_++] = static_cast<uint8_t>(v      ) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >>  7) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 14) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 21) & 0x7f;
+    output.data[output.ptr++] = static_cast<uint8_t>(v      ) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >>  7) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 14) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 21) & 0x7f;
   } else if (v < 34359738368) {
     RUCKSACK_ALLOCATE(5)
-    data_[ptr_++] = static_cast<uint8_t>(v      ) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >>  7) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 14) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 21) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 28) & 0x7f;
+    output.data[output.ptr++] = static_cast<uint8_t>(v      ) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >>  7) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 14) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 21) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 28) & 0x7f;
   } else if (v < 4398046511104) {
     RUCKSACK_ALLOCATE(6)
-    data_[ptr_++] = static_cast<uint8_t>(v      ) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >>  7) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 14) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 21) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 28) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 35) & 0x7f;
+    output.data[output.ptr++] = static_cast<uint8_t>(v      ) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >>  7) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 14) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 21) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 28) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 35) & 0x7f;
   } else if (v < 562949953421312) {
     RUCKSACK_ALLOCATE(7)
-    data_[ptr_++] = static_cast<uint8_t>(v      ) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >>  7) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 14) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 21) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 28) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 35) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 42) & 0x7f;
+    output.data[output.ptr++] = static_cast<uint8_t>(v      ) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >>  7) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 14) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 21) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 28) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 35) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 42) & 0x7f;
   } else {
     RUCKSACK_ALLOCATE(8)
-    data_[ptr_++] = static_cast<uint8_t>(v      ) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >>  7) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 14) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 21) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 28) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 35) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 42) | 0x80;
-    data_[ptr_++] = static_cast<uint8_t>(v >> 49) & 0x7f;
+    output.data[output.ptr++] = static_cast<uint8_t>(v      ) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >>  7) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 14) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 21) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 28) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 35) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 42) | 0x80;
+    output.data[output.ptr++] = static_cast<uint8_t>(v >> 49) & 0x7f;
   }
 }
 
-void OutputBuffer::WriteDouble(double v) {
+void WriteDouble(double v) {
   RUCKSACK_ALLOCATE(8)
 
-  char* dest = data_ + ptr_;
-  char* src = reinterpret_cast<char*>(&v);
+  uint8_t* dest = output.data + output.ptr;
+  uint8_t* src = reinterpret_cast<uint8_t*>(&v);
 
 #if BYTE_ORDER == LITTLE_ENDIAN
   dest[0] = src[0]; dest[1] = src[1]; dest[2] = src[2]; dest[3] = src[3];
@@ -140,40 +145,21 @@ void OutputBuffer::WriteDouble(double v) {
   dest[4] = src[3]; dest[5] = src[2]; dest[6] = src[1]; dest[7] = src[0];
 #endif
 
-  ptr_ += 8;
+  output.ptr += 8;
 }
 
-Handle<Object> OutputBuffer::Flush(Handle<Object> target) {
-  uint16_t offset = static_cast<uint16_t>(last_flushed_);
-  uint16_t length = static_cast<uint16_t>(ptr_ - last_flushed_);
-
-  data_[0] = static_cast<uint8_t>(offset     ) & 0xff;
-  data_[1] = static_cast<uint8_t>(offset >> 8) & 0xff;
-  data_[2] = static_cast<uint8_t>(length     ) & 0xff;
-  data_[3] = static_cast<uint8_t>(length >> 8) & 0xff;
-
-  target->SetIndexedPropertiesToExternalArrayData(
-    data_ + last_flushed_, kExternalUnsignedByteArray, length);
-
-  // update how much of the buffer has been flushed already
-  last_flushed_ = ptr_;
-
-  // return the SlowBuffer object
-  return handle_;
-}
-
-void pack(Handle<Value> v, OutputBuffer* out) {
+void Write(v8::Handle<v8::Value> v) {
   if (v->IsNumber()) {
     double d = v->NumberValue();
     double t; // dummy variable for `modf(d, &t)`
 
     // infinities and NaNs
     if (d == kPositiveInfinity) {
-      out->WriteByte(0xa6);
+      WriteByte(0xa6);
     } else if (d == kNegativeInfinity) {
-      out->WriteByte(0xa7);
+      WriteByte(0xa7);
     } else if (d != d) {
-      out->WriteByte(0xa5);
+      WriteByte(0xa5);
     }
 
     // integers
@@ -182,32 +168,51 @@ void pack(Handle<Value> v, OutputBuffer* out) {
 
       if (i >= 0 && (d != 0 || 1.0 / d >= 0.0)) {
         if (i < 128) {
-          out->WriteByte(static_cast<char>(i));
+          WriteByte(static_cast<uint8_t>(i));
         } else {
-          out->WriteByte(0xa8);
-          out->WriteVarint(static_cast<uint64_t>(i - 128));
+          WriteByte(0xa8);
+          WriteVarint(static_cast<uint64_t>(i - 128));
         }
       } else {
         if (i > -32) {
-          out->WriteByte(static_cast<char>(0x80 - i));
+          WriteByte(static_cast<uint8_t>(0x80 - i));
         } else {
-          out->WriteByte(0xa9);
-          out->WriteVarint(static_cast<uint64_t>(-i - 32));
+          WriteByte(0xa9);
+          WriteVarint(static_cast<uint64_t>(-i - 32));
         }
       }
     }
 
     // floating point values, or particularly large integers
     else {
-      out->WriteByte(0xaa);
-      out->WriteDouble(d);
+      WriteByte(0xaa);
+      WriteDouble(d);
     }
   }
 
   else {
     // @todo: everything else -- default to undefined for now
-    out->WriteByte(0xa1);
+    WriteByte(0xa1);
   }
+}
+
+v8::Handle<v8::Object> Flush(v8::Handle<v8::Object> target) {
+  uint16_t offset = static_cast<uint16_t>(output.last_flushed);
+  uint16_t length = static_cast<uint16_t>(output.ptr - output.last_flushed);
+
+  output.data[0] = static_cast<uint8_t>(offset     ) & 0xff;
+  output.data[1] = static_cast<uint8_t>(offset >> 8) & 0xff;
+  output.data[2] = static_cast<uint8_t>(length     ) & 0xff;
+  output.data[3] = static_cast<uint8_t>(length >> 8) & 0xff;
+
+  target->SetIndexedPropertiesToExternalArrayData(
+    output.data + output.last_flushed, kExternalUnsignedByteArray, length);
+
+  // update how much of the buffer has been flushed already
+  output.last_flushed = output.ptr;
+
+  // return the SlowBuffer object
+  return output.handle;
 }
 
 } // namespace rucksack

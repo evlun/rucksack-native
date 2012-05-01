@@ -9,19 +9,21 @@ using namespace v8;
 
 namespace rucksack {
 
-static OutputBuffer* out = new OutputBuffer();
-
 static Handle<Value> Pack(const Arguments& args) {
-  pack(args[0], out);
-  return out->Flush(args[1]->ToObject());
+  // because this function should only get called from `lib/bindings.js`, we can
+  // assume that the arguments are correctly formed
+
+  Write(args[0]);
+  return Flush(args[1]->ToObject());
 }
 
 extern "C" {
-  void init(Handle<Object> target) {
+  void Init(Handle<Object> target) {
+    InitOutput();
     NODE_SET_METHOD(target, "pack", Pack);
   }
 
-  NODE_MODULE(rucksack, init);
+  NODE_MODULE(rucksack, Init);
 }
 
 } // namespace rucksack
